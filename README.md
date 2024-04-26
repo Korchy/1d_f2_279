@@ -4,7 +4,7 @@ Blender official F2 add-on.
 
 This add-on version is for Blender 2.79.
 
-Forked version 1.8.4 from https://github.com/Cfyzzz/Other-scripts/blob/master/f2.py
+Forked source version 1.8.4 from https://github.com/Cfyzzz/Other-scripts/blob/master/f2.py
 
 Blender version
 -
@@ -13,4 +13,4 @@ Blender version
 Version history
 -
 1.8.5
-- Improvements in "quad from vertex" algorithm
+- Improvements in "quad from vertex" algorithm. Added as option in add-on preferences.

@@ -10,6 +10,7 @@ import itertools
 import mathutils
 import math
 from mathutils import Vector
+from mathutils.geometry import intersect_point_line
 from bpy_extras import view3d_utils
 
 bl_info = {
@@ -181,7 +182,7 @@ def quad_from_edge(bm, edge_sel, context, event):
 
 
 # create a face from a single selected vertex, if it is an open vertex
-def quad_from_vertex(bm, vert_sel, context, event):
+def quad_from_vertex(bm, vert_sel, context, event, operator):
     addon_prefs = context.user_preferences.addons[__name__].preferences
     ob = context.active_object
     me = ob.data
@@ -194,108 +195,133 @@ def quad_from_vertex(bm, vert_sel, context, event):
         return
 
     # determine which edges to use, based on mouse cursor position
+    same_dist = False
     min_dist = False
     mouse_pos = Vector([event.mouse_region_x, event.mouse_region_y])
     for a, b in itertools.combinations(edges, 2):
         other_verts = [vert for edge in [a, b] for vert in edge.verts if not vert.select]
-        print(other_verts)
         mid_other = (other_verts[0].co.copy() + other_verts[1].co.copy()) / 2
         new_pos = 2 * (mid_other - vert_sel.co.copy()) + vert_sel.co.copy()
         world_pos = ob.matrix_world * new_pos
         screen_pos = view3d_utils.location_3d_to_region_2d(region, region_3d, world_pos)
-        dist = (mouse_pos - screen_pos).length
+        if addon_prefs.quad_from_v_diagonal:
+            # find min distance from screen mouse position to projection of screen mouse position to the
+            #   diagonal (vector from selected vertex to new vertex)
+            #   or if it projects on the continuation of the diagonal - to the new vertex
+            vert_sel_world_pos = ob.matrix_world * vert_sel.co
+            vert_sel_screen_pos = view3d_utils.location_3d_to_region_2d(region, region_3d, vert_sel_world_pos)
+            intersect = intersect_point_line(
+                mouse_pos,
+                vert_sel_screen_pos,
+                screen_pos
+            )   # (projection co, distance ratio from vert_sel_screen_pos)
+            if 0.0 <= intersect[1] <= 1.0:  # projects on the diagonal (not on its continuation in any direction)
+                dist = (mouse_pos - intersect[0]).length
+            else:
+                dist = (mouse_pos - screen_pos).length
+        else:
+            # old algorithm - find min distance from mouse position to the new vertex
+            dist = (mouse_pos - screen_pos).length
+        # get final min distance
         if not min_dist or dist < min_dist[0]:
             min_dist = (dist, (a, b), other_verts, new_pos)
-
-    # create vertex at location mirrored in the line, connecting the open edges
-    edges = min_dist[1]
-    other_verts = min_dist[2]
-    new_pos = min_dist[3]
-    vert_new = bm.verts.new(new_pos)
-
-    # normal detection
-    flip_align = True
-    normal_edge = edges[0]
-    if not normal_edge.link_faces:
-        normal_edge = edges[1]
-        if not normal_edge.link_faces:
-            # no connected faces, so no need to flip the face normal
-            flip_align = False
-    if flip_align:  # there is a face to which the normal can be aligned
-        ref_verts = [v for v in normal_edge.link_faces[0].verts]
-        if other_verts[0] in ref_verts:
-            va_1 = other_verts[0]
-            va_2 = vert_sel
-        else:
-            va_1 = vert_sel
-            va_2 = other_verts[1]
-        if (va_1 == ref_verts[0] and va_2 == ref_verts[-1]) or \
-                (va_2 == ref_verts[0] and va_1 == ref_verts[-1]):
-            # reference verts are at start and end of the list -> shift list
-            ref_verts = ref_verts[1:] + [ref_verts[0]]
-        if ref_verts.index(va_1) > ref_verts.index(va_2):
-            # connected face has same normal direction, so don't flip
-            flip_align = False
-
-    # material index detection
-    ref_faces = vert_sel.link_faces
-    if not ref_faces:
-        mat_index = False
-        smooth = False
+        elif dist == min_dist[0]:
+            # two or more same distances
+            same_dist = True
+    if same_dist:
+        # two or more same distances found
+        operator.report({'INFO'}, 'quad is uncertain')
     else:
-        mat_index = ref_faces[0].material_index
-        smooth = ref_faces[0].smooth
+        # normal situation
+        # create vertex at location mirrored in the line, connecting the open edges
+        edges = min_dist[1]
+        other_verts = min_dist[2]
+        new_pos = min_dist[3]
+        vert_new = bm.verts.new(new_pos)
 
-    if addon_prefs.quad_from_v_mat:
-        mat_index = bpy.context.object.active_material_index
+        # normal detection
+        flip_align = True
+        normal_edge = edges[0]
+        if not normal_edge.link_faces:
+            normal_edge = edges[1]
+            if not normal_edge.link_faces:
+                # no connected faces, so no need to flip the face normal
+                flip_align = False
+        if flip_align:  # there is a face to which the normal can be aligned
+            ref_verts = [v for v in normal_edge.link_faces[0].verts]
+            if other_verts[0] in ref_verts:
+                va_1 = other_verts[0]
+                va_2 = vert_sel
+            else:
+                va_1 = vert_sel
+                va_2 = other_verts[1]
+            if (va_1 == ref_verts[0] and va_2 == ref_verts[-1]) or \
+                    (va_2 == ref_verts[0] and va_1 == ref_verts[-1]):
+                # reference verts are at start and end of the list -> shift list
+                ref_verts = ref_verts[1:] + [ref_verts[0]]
+            if ref_verts.index(va_1) > ref_verts.index(va_2):
+                # connected face has same normal direction, so don't flip
+                flip_align = False
 
-    # create face between all 4 vertices involved
-    verts = [other_verts[0], vert_sel, other_verts[1], vert_new]
-    if flip_align:
-        verts.reverse()
-    face = bm.faces.new(verts)
-    if mat_index:
-        face.material_index = mat_index
-    face.smooth = smooth
+        # material index detection
+        ref_faces = vert_sel.link_faces
+        if not ref_faces:
+            mat_index = False
+            smooth = False
+        else:
+            mat_index = ref_faces[0].material_index
+            smooth = ref_faces[0].smooth
 
-    # change selection
-    vert_new.select = True
-    vert_sel.select = False
+        if addon_prefs.quad_from_v_mat:
+            mat_index = bpy.context.object.active_material_index
 
-    # adjust uv-map
-    if __name__ != '__main__':
-        if addon_prefs.adjustuv:
-            uv_layer = get_uv_layer(ob, bm, mat_index)
-            if uv_layer:
-                uv_others = {}
-                uv_sel = None
-                uv_new = None
-                # get original uv coordinates
-                for i in range(2):
-                    for loop in other_verts[i].link_loops:
-                        if loop.face.index > -1:
-                            uv_others[loop.vert.index] = loop[uv_layer].uv
-                            break
-                if len(uv_others) == 2:
-                    mid_other = (list(uv_others.values())[0] +
-                                 list(uv_others.values())[1]) / 2
-                    for loop in vert_sel.link_loops:
-                        if loop.face.index > -1:
-                            uv_sel = loop[uv_layer].uv
-                            break
-                    if uv_sel:
-                        uv_new = 2 * (mid_other - uv_sel) + uv_sel
+        # create face between all 4 vertices involved
+        verts = [other_verts[0], vert_sel, other_verts[1], vert_new]
+        if flip_align:
+            verts.reverse()
+        face = bm.faces.new(verts)
+        if mat_index:
+            face.material_index = mat_index
+        face.smooth = smooth
 
-                # set uv coordinates for new loops
-                if uv_new:
-                    for loop in face.loops:
-                        if loop.vert.index == -1:
-                            x, y = uv_new
-                        elif loop.vert.index in uv_others:
-                            x, y = uv_others[loop.vert.index]
-                        else:
-                            x, y = uv_sel
-                        loop[uv_layer].uv = (x, y)
+        # change selection
+        vert_new.select = True
+        vert_sel.select = False
+
+        # adjust uv-map
+        if __name__ != '__main__':
+            if addon_prefs.adjustuv:
+                uv_layer = get_uv_layer(ob, bm, mat_index)
+                if uv_layer:
+                    uv_others = {}
+                    uv_sel = None
+                    uv_new = None
+                    # get original uv coordinates
+                    for i in range(2):
+                        for loop in other_verts[i].link_loops:
+                            if loop.face.index > -1:
+                                uv_others[loop.vert.index] = loop[uv_layer].uv
+                                break
+                    if len(uv_others) == 2:
+                        mid_other = (list(uv_others.values())[0] +
+                                     list(uv_others.values())[1]) / 2
+                        for loop in vert_sel.link_loops:
+                            if loop.face.index > -1:
+                                uv_sel = loop[uv_layer].uv
+                                break
+                        if uv_sel:
+                            uv_new = 2 * (mid_other - uv_sel) + uv_sel
+
+                    # set uv coordinates for new loops
+                    if uv_new:
+                        for loop in face.loops:
+                            if loop.vert.index == -1:
+                                x, y = uv_new
+                            elif loop.vert.index in uv_others:
+                                x, y = uv_others[loop.vert.index]
+                            else:
+                                x, y = uv_sel
+                            loop[uv_layer].uv = (x, y)
 
     # toggle mode, to force correct drawing
     bpy.ops.object.mode_set(mode='OBJECT')
@@ -486,6 +512,11 @@ class F2AddonPreferences(bpy.types.AddonPreferences):
         name="Ngons",
         description="Use active material for created face instead of close one",
         default=True)
+    quad_from_v_diagonal = bpy.props.BoolProperty(
+        name="Diagonal",
+        description="Calculate the distance to the closest diagonal instead of vertex",
+        default=True
+    )
 
     def draw(self, context):
         layout = self.layout
@@ -495,6 +526,7 @@ class F2AddonPreferences(bpy.types.AddonPreferences):
         col.prop(self, "autograb")
         col.prop(self, "adjustuv")
         col.prop(self, "extendvert")
+        col.prop(self, "quad_from_v_diagonal")
 
         col = layout.column()
         col.label("use active material when creating:")
@@ -518,7 +550,7 @@ class MeshF2(bpy.types.Operator):
         return (ob and ob.type == 'MESH' and context.mode == 'EDIT_MESH')
 
     def usequad(self, bm, sel, context, event):
-        quad_from_vertex(bm, sel, context, event)
+        quad_from_vertex(bm, sel, context, event, self)
         if __name__ != '__main__':
             addon_prefs = context.user_preferences.addons[__name__].preferences
             if addon_prefs.autograb:
