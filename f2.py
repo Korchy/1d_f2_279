@@ -15,9 +15,9 @@ from bpy_extras import view3d_utils
 
 bl_info = {
     "name": "F2_NA",    # temporary name for testing
-    # "name": "F2",    # temporary name for testing
+    # "name": "F2",    # real name for publishing
     "author": "Bart Crouch, Alexander Nedovizin, Paul Kotelevets (concept design), Adrian Rutkowski, Nikita Akimov",
-    "version": (1, 8, 5),
+    "version": (1, 8, 6),
     "blender": (2, 78, 0),
     "location": "Editmode > F",
     "description": "Extends the 'Make Edge/Face' functionality",
@@ -481,6 +481,19 @@ def checkforconnected(conection):
     return len(linked)
 
 
+class F2:
+
+    @staticmethod
+    def deselect_all(bm):
+        # remove all selection from object vertices/edges/faces
+        for face in bm.faces:
+            face.select = False
+        for edge in bm.edges:
+            edge.select = False
+        for vertex in bm.verts:
+            vertex.select = False
+
+
 # autograb preference in addons panel
 class F2AddonPreferences(bpy.types.AddonPreferences):
     bl_idname = __name__
@@ -517,6 +530,11 @@ class F2AddonPreferences(bpy.types.AddonPreferences):
         description="Calculate the distance to the closest diagonal instead of vertex",
         default=True
     )
+    quad_from_v_autoselect = bpy.props.BoolProperty(
+        name="Autoselect (non-invasive selection)",
+        description="Autoselect",
+        default=True
+    )
 
     def draw(self, context):
         layout = self.layout
@@ -527,6 +545,7 @@ class F2AddonPreferences(bpy.types.AddonPreferences):
         col.prop(self, "adjustuv")
         col.prop(self, "extendvert")
         col.prop(self, "quad_from_v_diagonal")
+        col.prop(self, "quad_from_v_autoselect")
 
         col = layout.column()
         col.label("use active material when creating:")
@@ -559,6 +578,21 @@ class MeshF2(bpy.types.Operator):
     def invoke(self, context, event):
         bm = bmesh.from_edit_mesh(context.active_object.data)
         sel = [v for v in bm.verts if v.select]
+
+        mouse_pos = Vector([event.mouse_region_x, event.mouse_region_y])
+        # check autoselect possibility
+        if context.user_preferences.addons[__name__].preferences.quad_from_v_autoselect:
+            # number of selected vertices
+            if len(sel) <= 1:
+                # process only if 0 or 1 vertex is selected
+                if len(sel) == 1:
+                    F2.deselect_all(bm=bm)
+                # simulate mouse click for selecting nearest to mouse cursor vertex
+                bpy.ops.view3d.select(location=[int(mouse_pos.x), int(mouse_pos.y)])
+                # update bmesh because operator view3d.select doesn't updates it
+                bm = bmesh.from_edit_mesh(context.active_object.data)
+                sel = [v for v in bm.verts if v.select]
+
         if len(sel) > 2:
             # original 'Make Edge/Face' behaviour
             try:
